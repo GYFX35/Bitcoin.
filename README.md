@@ -90,3 +90,33 @@ To see the decentralization and consensus algorithm in action, you can run multi
     ```bash
     curl http://127.0.0.1:5000/chain
     ```
+
+## Deployment to Heroku
+
+This project is set up for automatic deployment to Heroku using GitHub Actions.
+
+### Prerequisites
+
+1.  A Heroku account.
+2.  The Heroku CLI (optional, but helpful for debugging).
+
+### Setup Instructions
+
+1.  **Create a Heroku App:**
+    -   Go to your Heroku dashboard and create a new app.
+    -   Choose a unique name for your app (e.g., `my-simple-blockchain`). This will be your `HEROKU_APP_NAME`.
+
+2.  **Get your Heroku API Key:**
+    -   Go to your Heroku Account Settings page.
+    -   Scroll down to the "API Key" section and click "Reveal" to see your API key. This will be your `HEROKU_API_KEY`.
+
+3.  **Configure GitHub Secrets:**
+    -   In your GitHub repository, go to `Settings > Secrets and variables > Actions`.
+    -   Click `New repository secret` to add the following secrets:
+        -   `HEROKU_APP_NAME`: The name of the Heroku app you created.
+        -   `HEROKU_API_KEY`: Your Heroku API key.
+        -   `HEROKU_EMAIL`: The email address you use for your Heroku account.
+
+4.  **Deploy:**
+    -   Once the secrets are configured, the deployment will automatically trigger every time you push a new commit to the `main` branch.
+    -   You can monitor the deployment progress in the "Actions" tab of your GitHub repository.
