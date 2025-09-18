@@ -179,6 +179,13 @@ class Blockchain:
 # Instantiate our Node
 app = Flask(__name__)
 
+# Import and register the new blueprints
+from facebook_integration import facebook_blueprint
+from mql5_integration import mql5_blueprint
+
+app.register_blueprint(facebook_blueprint)
+app.register_blueprint(mql5_blueprint)
+
 # Generate a globally unique address for this node
 node_identifier = str(uuid4()).replace('-', '')
 

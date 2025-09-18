@@ -1,3 +1,9 @@
 Flask
 requests
 gunicorn
+facebook_business
+PythonMetaTrader5
+pandas
+pytz
+pytest
+pytest-mock
