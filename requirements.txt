@@ -7,3 +7,4 @@ pandas
 pytz
 pytest
 pytest-mock
+ecdsa

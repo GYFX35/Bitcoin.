@@ -1,5 +1,7 @@
 import hashlib
 import json
+import binascii
+from ecdsa import SigningKey, VerifyingKey, SECP256k1
 from argparse import ArgumentParser
 from time import time
 from urllib.parse import urlparse
@@ -9,13 +11,23 @@ import requests
 from flask import Flask, jsonify, request, render_template
 
 class Blockchain:
-    def __init__(self):
+    def __init__(self, port=5000):
         self.chain = []
         self.current_transactions = []
         self.nodes = set()
+        self.difficulty = 4
+        self.filename = f'blockchain_{port}.json'
 
-        # Create the genesis block
-        self.new_block(previous_hash='1', proof=100)
+        # Load chain from file or create genesis block
+        if not self.load_chain():
+            # Create the genesis block
+            self.new_block(previous_hash='1', proof=100)
+
+    def update_port(self, port):
+        self.filename = f'blockchain_{port}.json'
+        self.chain = []
+        if not self.load_chain():
+            self.new_block(previous_hash='1', proof=100)
 
     def new_block(self, proof, previous_hash=None):
         """
@@ -37,6 +49,7 @@ class Blockchain:
         self.current_transactions = []
 
         self.chain.append(block)
+        self.save_chain()
         return block
 
     def register_node(self, address):
@@ -73,6 +86,17 @@ class Blockchain:
             # Check that the Proof of Work is correct
             if not self.valid_proof(last_block['proof'], block['proof']):
                 return False
+
+            # Check that all transactions in the block are valid
+            for transaction in block['transactions']:
+                if transaction['sender'] != '0':
+                    transaction_data = {
+                        'sender': transaction['sender'],
+                        'recipient': transaction['recipient'],
+                        'amount': transaction['amount'],
+                    }
+                    if not self.verify_transaction(transaction['sender'], transaction['signature'], transaction_data):
+                        return False
 
             last_block = block
             current_index += 1
@@ -116,21 +140,54 @@ class Blockchain:
 
         return False
 
-    def new_transaction(self, sender, recipient, amount):
+    def new_transaction(self, sender, recipient, amount, signature=None):
         """
         Creates a new transaction to go into the next mined Block
-        :param sender: <str> Address of the Sender
+        :param sender: <str> Address of the Sender (Public Key)
         :param recipient: <str> Address of the Recipient
         :param amount: <int> Amount
+        :param signature: <str> Digital Signature
         :return: <int> The index of the Block that will hold this transaction
         """
+        transaction = {
+            'sender': sender,
+            'recipient': recipient,
+            'amount': amount,
+        }
+
+        if sender != "0":
+            if not signature:
+                raise ValueError("Transaction must be signed")
+            if not self.verify_transaction(sender, signature, transaction):
+                raise ValueError("Invalid signature")
+
+            # Check balance
+            if self.get_balance(sender) < amount:
+                raise ValueError("Insufficient balance")
+
         self.current_transactions.append({
             'sender': sender,
             'recipient': recipient,
             'amount': amount,
+            'signature': signature
         })
 
+        self.save_chain()
         return self.last_block['index'] + 1
+
+    @staticmethod
+    def verify_transaction(public_key_hex, signature_hex, transaction_data):
+        """
+        Verifies a transaction signature
+        """
+        try:
+            public_key = VerifyingKey.from_string(binascii.unhexlify(public_key_hex), curve=SECP256k1)
+            signature = binascii.unhexlify(signature_hex)
+            # Use sort_keys to ensure consistent JSON string
+            transaction_string = json.dumps(transaction_data, sort_keys=True).encode()
+            return public_key.verify(signature, transaction_string)
+        except Exception:
+            return False
 
     def proof_of_work(self, last_proof):
         """
@@ -147,10 +204,9 @@ class Blockchain:
 
         return proof
 
-    @staticmethod
-    def valid_proof(last_proof, proof):
+    def valid_proof(self, last_proof, proof):
         """
-        Validates the proof: Does hash(last_proof, proof) contain 4 leading zeroes?
+        Validates the proof: Does hash(last_proof, proof) contain leading zeroes?
         :param last_proof: <int> Previous Proof
         :param proof: <int> Current Proof
         :return: <bool> True if correct, False if not.
@@ -158,7 +214,58 @@ class Blockchain:
 
         guess = f'{last_proof}{proof}'.encode()
         guess_hash = hashlib.sha256(guess).hexdigest()
-        return guess_hash[:4] == "0000"
+        return guess_hash[:self.difficulty] == "0" * self.difficulty
+
+    def get_balance(self, address):
+        """
+        Calculates the balance of a given address
+        """
+        balance = 0
+        for block in self.chain:
+            for transaction in block['transactions']:
+                if transaction['sender'] == address:
+                    balance -= transaction['amount']
+                if transaction['recipient'] == address:
+                    balance += transaction['amount']
+
+        # Also consider transactions in the current pool
+        for transaction in self.current_transactions:
+            if transaction['sender'] == address:
+                balance -= transaction['amount']
+            if transaction['recipient'] == address:
+                balance += transaction['amount']
+
+        return balance
+
+    def save_chain(self):
+        """
+        Saves the chain and pending transactions to a JSON file
+        """
+        data = {
+            'chain': self.chain,
+            'current_transactions': self.current_transactions,
+            'difficulty': self.difficulty
+        }
+        with open(self.filename, 'w') as f:
+            json.dump(data, f, indent=4)
+
+    def load_chain(self):
+        """
+        Loads the chain and pending transactions from a JSON file
+        """
+        try:
+            with open(self.filename, 'r') as f:
+                data = json.load(f)
+                # Handle old format where file only contained the chain list
+                if isinstance(data, list):
+                    self.chain = data
+                else:
+                    self.chain = data.get('chain', [])
+                    self.current_transactions = data.get('current_transactions', [])
+                    self.difficulty = data.get('difficulty', 4)
+                return True
+        except (FileNotFoundError, json.JSONDecodeError):
+            return False
 
     @property
     def last_block(self):
@@ -190,7 +297,8 @@ app.register_blueprint(mql5_blueprint)
 node_identifier = str(uuid4()).replace('-', '')
 
 # Instantiate the Blockchain
-blockchain = Blockchain()
+import os
+blockchain = Blockchain(port=os.environ.get('PORT', 5000))
 
 
 @app.route('/')
@@ -237,7 +345,15 @@ def new_transaction_endpoint():
         return 'Missing values', 400
 
     # Create a new Transaction
-    index = blockchain.new_transaction(values['sender'], values['recipient'], values['amount'])
+    try:
+        index = blockchain.new_transaction(
+            values['sender'],
+            values['recipient'],
+            values['amount'],
+            values.get('signature')
+        )
+    except ValueError as e:
+        return str(e), 400
 
     response = {'message': f'Transaction will be added to Block {index}'}
     return jsonify(response), 201
@@ -250,6 +366,50 @@ def full_chain():
         'length': len(blockchain.chain),
     }
     return jsonify(response), 200
+
+
+@app.route('/balance/<address>', methods=['GET'])
+def get_balance_endpoint(address):
+    balance = blockchain.get_balance(address)
+    response = {
+        'address': address,
+        'balance': balance,
+    }
+    return jsonify(response), 200
+
+
+@app.route('/wallet/new', methods=['GET'])
+def new_wallet():
+    private_key = SigningKey.generate(curve=SECP256k1)
+    public_key = private_key.verifying_key
+
+    private_key_hex = binascii.hexlify(private_key.to_string()).decode()
+    public_key_hex = binascii.hexlify(public_key.to_string()).decode()
+
+    response = {
+        'private_key': private_key_hex,
+        'public_key': public_key_hex,
+    }
+    return jsonify(response), 200
+
+
+@app.route('/difficulty', methods=['GET', 'POST'])
+def difficulty():
+    if request.method == 'POST':
+        values = request.get_json()
+        if not values or 'difficulty' not in values:
+            return 'Missing difficulty value', 400
+
+        try:
+            new_difficulty = int(values.get('difficulty'))
+            if new_difficulty < 1:
+                return 'Difficulty must be at least 1', 400
+            blockchain.difficulty = new_difficulty
+            return jsonify({'message': f'Difficulty set to {new_difficulty}'}), 200
+        except (ValueError, TypeError):
+            return 'Invalid difficulty value. Must be an integer.', 400
+
+    return jsonify({'difficulty': blockchain.difficulty}), 200
 
 
 @app.route('/nodes/register', methods=['POST'])
@@ -293,5 +453,7 @@ if __name__ == '__main__':
     parser.add_argument('-p', '--port', default=5000, type=int, help='port to listen on')
     args = parser.parse_args()
     port = args.port
+
+    blockchain.update_port(port)
 
     app.run(host='0.0.0.0', port=port)

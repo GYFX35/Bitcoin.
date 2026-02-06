@@ -19,12 +19,34 @@
     <div class="container">
         <h1>Blockchain Interface</h1>
 
+        <h2>Wallet</h2>
+        <button id="generate-wallet-button">Generate New Wallet</button>
+        <div id="wallet-info" style="margin-top: 10px; display: none;">
+            <p><strong>Public Key (Address):</strong> <span id="public-key"></span></p>
+            <p><strong>Private Key (KEEP SECRET!):</strong> <span id="private-key"></span></p>
+        </div>
+
+        <h2>Check Balance</h2>
+        <form id="balance-form">
+            <input type="text" id="balance-address" placeholder="Address">
+            <button type="submit">Check Balance</button>
+        </form>
+        <p id="balance-result"></p>
+
         <h2>Add a New Transaction</h2>
         <form id="transaction-form">
-            <input type="text" id="sender" name="sender" placeholder="Sender Address" required>
+            <input type="text" id="sender" name="sender" placeholder="Sender Public Key" required>
             <input type="text" id="recipient" name="recipient" placeholder="Recipient Address" required>
             <input type="text" id="amount" name="amount" placeholder="Amount" required>
+            <input type="text" id="signature" name="signature" placeholder="Signature (Required for non-reward)">
             <button type="submit">Add Transaction</button>
+        </form>
+
+        <h2>Difficulty</h2>
+        <p>Current Difficulty: <span id="current-difficulty"></span></p>
+        <form id="difficulty-form">
+            <input type="text" id="new-difficulty" placeholder="New Difficulty">
+            <button type="submit">Set Difficulty</button>
         </form>
 
         <h2>Mine a New Block</h2>
@@ -39,7 +61,11 @@
             init: async () => {
                 document.getElementById('transaction-form').addEventListener('submit', App.newTransaction);
                 document.getElementById('mine-button').addEventListener('click', App.mine);
+                document.getElementById('generate-wallet-button').addEventListener('click', App.generateWallet);
+                document.getElementById('balance-form').addEventListener('submit', App.checkBalance);
+                document.getElementById('difficulty-form').addEventListener('submit', App.setDifficulty);
                 await App.fetchChain();
+                await App.fetchDifficulty();
             },
 
             fetchChain: async () => {
@@ -52,21 +78,84 @@
                 }
             },
 
+            fetchDifficulty: async () => {
+                try {
+                    const response = await fetch('/difficulty');
+                    const data = await response.json();
+                    document.getElementById('current-difficulty').textContent = data.difficulty;
+                } catch (error) {
+                    console.error('Error fetching difficulty:', error);
+                }
+            },
+
+            setDifficulty: async (event) => {
+                event.preventDefault();
+                const difficulty = document.getElementById('new-difficulty').value;
+                try {
+                    const response = await fetch('/difficulty', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ difficulty: Number(difficulty) }),
+                    });
+                    const data = await response.json();
+                    alert(data.message || data);
+                    await App.fetchDifficulty();
+                } catch (error) {
+                    console.error('Error setting difficulty:', error);
+                }
+            },
+
+            generateWallet: async () => {
+                try {
+                    const response = await fetch('/wallet/new');
+                    const data = await response.json();
+                    document.getElementById('public-key').textContent = data.public_key;
+                    document.getElementById('private-key').textContent = data.private_key;
+                    document.getElementById('wallet-info').style.display = 'block';
+                } catch (error) {
+                    console.error('Error generating wallet:', error);
+                }
+            },
+
+            checkBalance: async (event) => {
+                event.preventDefault();
+                const address = document.getElementById('balance-address').value;
+                try {
+                    const response = await fetch(`/balance/${address}`);
+                    const data = await response.json();
+                    document.getElementById('balance-result').textContent = `Balance for ${address}: ${data.balance}`;
+                } catch (error) {
+                    console.error('Error checking balance:', error);
+                }
+            },
+
             newTransaction: async (event) => {
                 event.preventDefault();
                 const sender = document.getElementById('sender').value;
                 const recipient = document.getElementById('recipient').value;
                 const amount = document.getElementById('amount').value;
+                const signature = document.getElementById('signature').value;
 
                 try {
                     const response = await fetch('/transactions/new', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ sender, recipient, amount: Number(amount) }),
+                        body: JSON.stringify({
+                            sender,
+                            recipient,
+                            amount: Number(amount),
+                            signature: signature || null
+                        }),
                     });
-                    const data = await response.json();
-                    alert(data.message);
-                    document.getElementById('transaction-form').reset();
+                    if (response.ok) {
+                        const data = await response.json();
+                        alert(data.message);
+                        document.getElementById('transaction-form').reset();
+                        await App.fetchChain();
+                    } else {
+                        const error = await response.text();
+                        alert('Error: ' + error);
+                    }
                 } catch (error) {
                     console.error('Error creating transaction:', error);
                 }
