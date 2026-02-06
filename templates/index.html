@@ -19,11 +19,32 @@
     <div class="container">
         <h1>Blockchain Interface</h1>
 
+        <h2>Select Blockchain</h2>
+        <select id="blockchain-selector"></select>
+        <button id="refresh-blockchains">Refresh List</button>
+
+        <h2>Create New Blockchain</h2>
+        <form id="create-blockchain-form">
+            <input type="text" id="new-blockchain-name" placeholder="Blockchain Name" required>
+            <select id="new-blockchain-type">
+                <option value="altcoin">Altcoin</option>
+                <option value="stablecoin">Stablecoin</option>
+                <option value="news coin">News Coin</option>
+            </select>
+            <button type="submit">Create Blockchain</button>
+        </form>
+
+        <hr>
+        <h2 id="active-blockchain-title">Active Blockchain: None</h2>
+
         <h2>Add a New Transaction</h2>
         <form id="transaction-form">
             <input type="text" id="sender" name="sender" placeholder="Sender Address" required>
             <input type="text" id="recipient" name="recipient" placeholder="Recipient Address" required>
             <input type="text" id="amount" name="amount" placeholder="Amount" required>
+            <div id="metadata-container" style="display: none;">
+                <input type="text" id="news-content" name="news-content" placeholder="News Content (Optional)">
+            </div>
             <button type="submit">Add Transaction</button>
         </form>
 
@@ -36,15 +57,87 @@
 
     <script>
         const App = {
+            activeBlockchain: 'bitcoin',
+
             init: async () => {
                 document.getElementById('transaction-form').addEventListener('submit', App.newTransaction);
                 document.getElementById('mine-button').addEventListener('click', App.mine);
+                document.getElementById('blockchain-selector').addEventListener('change', App.changeBlockchain);
+                document.getElementById('refresh-blockchains').addEventListener('click', App.fetchBlockchains);
+                document.getElementById('create-blockchain-form').addEventListener('submit', App.createBlockchain);
+
+                await App.fetchBlockchains();
                 await App.fetchChain();
+            },
+
+            fetchBlockchains: async () => {
+                try {
+                    const response = await fetch('/blockchains');
+                    const data = await response.json();
+                    const selector = document.getElementById('blockchain-selector');
+                    const currentSelection = selector.value;
+                    selector.innerHTML = '';
+                    data.blockchains.forEach(bc => {
+                        const option = document.createElement('option');
+                        option.value = bc.name;
+                        option.textContent = `${bc.name} (${bc.type})`;
+                        selector.appendChild(option);
+                    });
+                    if (currentSelection && [...selector.options].some(o => o.value === currentSelection)) {
+                        selector.value = currentSelection;
+                    } else {
+                        App.activeBlockchain = selector.value;
+                    }
+                    App.updateActiveTitle();
+                } catch (error) {
+                    console.error('Error fetching blockchains:', error);
+                }
+            },
+
+            changeBlockchain: async (event) => {
+                App.activeBlockchain = event.target.value;
+                App.updateActiveTitle();
+                await App.fetchChain();
+            },
+
+            updateActiveTitle: () => {
+                const selector = document.getElementById('blockchain-selector');
+                const selectedOption = selector.options[selector.selectedIndex];
+                const type = selectedOption ? selectedOption.textContent.match(/\((.*)\)/)[1] : '';
+
+                document.getElementById('active-blockchain-title').textContent = `Active Blockchain: ${App.activeBlockchain} (${type})`;
+
+                // Show/hide metadata field based on type
+                if (type === 'news coin') {
+                    document.getElementById('metadata-container').style.display = 'block';
+                } else {
+                    document.getElementById('metadata-container').style.display = 'none';
+                }
+            },
+
+            createBlockchain: async (event) => {
+                event.preventDefault();
+                const name = document.getElementById('new-blockchain-name').value;
+                const type = document.getElementById('new-blockchain-type').value;
+
+                try {
+                    const response = await fetch('/blockchains/new', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name, type }),
+                    });
+                    const data = await response.json();
+                    alert(data.message || data);
+                    await App.fetchBlockchains();
+                    document.getElementById('new-blockchain-name').value = '';
+                } catch (error) {
+                    console.error('Error creating blockchain:', error);
+                }
             },
 
             fetchChain: async () => {
                 try {
-                    const response = await fetch('/chain');
+                    const response = await fetch(`/chain?blockchain=${App.activeBlockchain}`);
                     const data = await response.json();
                     document.getElementById('chain').textContent = JSON.stringify(data.chain, null, 2);
                 } catch (error) {
@@ -57,16 +150,23 @@
                 const sender = document.getElementById('sender').value;
                 const recipient = document.getElementById('recipient').value;
                 const amount = document.getElementById('amount').value;
+                const newsContent = document.getElementById('news-content').value;
+
+                const body = { sender, recipient, amount: Number(amount) };
+                if (newsContent) {
+                    body.metadata = { news: newsContent };
+                }
 
                 try {
-                    const response = await fetch('/transactions/new', {
+                    const response = await fetch(`/transactions/new?blockchain=${App.activeBlockchain}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ sender, recipient, amount: Number(amount) }),
+                        body: JSON.stringify(body),
                     });
                     const data = await response.json();
                     alert(data.message);
                     document.getElementById('transaction-form').reset();
+                    await App.fetchChain();
                 } catch (error) {
                     console.error('Error creating transaction:', error);
                 }
@@ -74,7 +174,7 @@
 
             mine: async () => {
                 try {
-                    const response = await fetch('/mine');
+                    const response = await fetch(`/mine?blockchain=${App.activeBlockchain}`);
                     const data = await response.json();
                     alert(data.message);
                     await App.fetchChain(); // Refresh the chain view

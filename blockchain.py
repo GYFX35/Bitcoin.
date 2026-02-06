@@ -9,7 +9,9 @@ import requests
 from flask import Flask, jsonify, request, render_template
 
 class Blockchain:
-    def __init__(self):
+    def __init__(self, name, coin_type='altcoin'):
+        self.name = name
+        self.coin_type = coin_type
         self.chain = []
         self.current_transactions = []
         self.nodes = set()
@@ -95,7 +97,8 @@ class Blockchain:
         # Grab and verify the chains from all the nodes in our network
         for node in neighbours:
             try:
-                response = requests.get(f'http://{node}/chain')
+                # Pass the blockchain name as a query parameter
+                response = requests.get(f'http://{node}/chain', params={'blockchain': self.name})
 
                 if response.status_code == 200:
                     length = response.json()['length']
@@ -116,18 +119,20 @@ class Blockchain:
 
         return False
 
-    def new_transaction(self, sender, recipient, amount):
+    def new_transaction(self, sender, recipient, amount, metadata=None):
         """
         Creates a new transaction to go into the next mined Block
         :param sender: <str> Address of the Sender
         :param recipient: <str> Address of the Recipient
         :param amount: <int> Amount
+        :param metadata: (Optional) <dict> Additional data (e.g. news content)
         :return: <int> The index of the Block that will hold this transaction
         """
         self.current_transactions.append({
             'sender': sender,
             'recipient': recipient,
             'amount': amount,
+            'metadata': metadata,
         })
 
         return self.last_block['index'] + 1
@@ -189,8 +194,24 @@ app.register_blueprint(mql5_blueprint)
 # Generate a globally unique address for this node
 node_identifier = str(uuid4()).replace('-', '')
 
-# Instantiate the Blockchain
-blockchain = Blockchain()
+# Store all blockchains in a dictionary
+blockchains = {
+    'bitcoin': Blockchain('bitcoin', 'altcoin'),
+    'tether': Blockchain('tether', 'stablecoin'),
+    'news-coin': Blockchain('news-coin', 'news coin')
+}
+
+def get_blockchain():
+    # Try to get blockchain name from query params or JSON body
+    name = request.args.get('blockchain')
+    if not name and request.is_json:
+        name = request.get_json().get('blockchain')
+
+    # Default to 'bitcoin' if not specified for backward compatibility
+    if not name:
+        name = 'bitcoin'
+
+    return blockchains.get(name)
 
 
 @app.route('/')
@@ -198,8 +219,42 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/blockchains', methods=['GET'])
+def list_blockchains():
+    response = {
+        'blockchains': [
+            {'name': bc.name, 'type': bc.coin_type} for bc in blockchains.values()
+        ]
+    }
+    return jsonify(response), 200
+
+
+@app.route('/blockchains/new', methods=['POST'])
+def create_blockchain():
+    values = request.get_json()
+
+    required = ['name', 'type']
+    if not all(k in values for k in required):
+        return 'Missing values', 400
+
+    name = values['name']
+    coin_type = values['type']
+
+    if name in blockchains:
+        return 'Blockchain already exists', 400
+
+    blockchains[name] = Blockchain(name, coin_type)
+
+    response = {'message': f'New blockchain "{name}" of type "{coin_type}" created.'}
+    return jsonify(response), 201
+
+
 @app.route('/mine', methods=['GET'])
 def mine():
+    blockchain = get_blockchain()
+    if not blockchain:
+        return 'Blockchain not found', 404
+
     # We run the proof of work algorithm to get the next proof...
     last_block = blockchain.last_block
     last_proof = last_block['proof']
@@ -218,7 +273,7 @@ def mine():
     block = blockchain.new_block(proof, previous_hash)
 
     response = {
-        'message': "New Block Forged",
+        'message': f"New Block Forged on {blockchain.name}",
         'index': block['index'],
         'transactions': block['transactions'],
         'proof': block['proof'],
@@ -229,6 +284,10 @@ def mine():
 
 @app.route('/transactions/new', methods=['POST'])
 def new_transaction_endpoint():
+    blockchain = get_blockchain()
+    if not blockchain:
+        return 'Blockchain not found', 404
+
     values = request.get_json()
 
     # Check that the required fields are in the POST'ed data
@@ -237,14 +296,23 @@ def new_transaction_endpoint():
         return 'Missing values', 400
 
     # Create a new Transaction
-    index = blockchain.new_transaction(values['sender'], values['recipient'], values['amount'])
+    index = blockchain.new_transaction(
+        values['sender'],
+        values['recipient'],
+        values['amount'],
+        values.get('metadata')
+    )
 
-    response = {'message': f'Transaction will be added to Block {index}'}
+    response = {'message': f'Transaction will be added to Block {index} of {blockchain.name}'}
     return jsonify(response), 201
 
 
 @app.route('/chain', methods=['GET'])
 def full_chain():
+    blockchain = get_blockchain()
+    if not blockchain:
+        return 'Blockchain not found', 404
+
     response = {
         'chain': blockchain.chain,
         'length': len(blockchain.chain),
@@ -254,6 +322,10 @@ def full_chain():
 
 @app.route('/nodes/register', methods=['POST'])
 def register_nodes():
+    blockchain = get_blockchain()
+    if not blockchain:
+        return 'Blockchain not found', 404
+
     values = request.get_json()
 
     nodes = values.get('nodes')
@@ -264,7 +336,7 @@ def register_nodes():
         blockchain.register_node(node)
 
     response = {
-        'message': 'New nodes have been added',
+        'message': f'New nodes have been added to {blockchain.name}',
         'total_nodes': list(blockchain.nodes),
     }
     return jsonify(response), 201
@@ -272,16 +344,20 @@ def register_nodes():
 
 @app.route('/nodes/resolve', methods=['GET'])
 def consensus():
+    blockchain = get_blockchain()
+    if not blockchain:
+        return 'Blockchain not found', 404
+
     replaced = blockchain.resolve_conflicts()
 
     if replaced:
         response = {
-            'message': 'Our chain was replaced',
+            'message': f'Our chain on {blockchain.name} was replaced',
             'new_chain': blockchain.chain
         }
     else:
         response = {
-            'message': 'Our chain is authoritative',
+            'message': f'Our chain on {blockchain.name} is authoritative',
             'chain': blockchain.chain
         }
 
