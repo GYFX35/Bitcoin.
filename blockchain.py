@@ -11,12 +11,13 @@ import requests
 from flask import Flask, jsonify, request, render_template
 
 class Blockchain:
-    def __init__(self, port=5000):
+    def __init__(self, port=5000, name='main'):
+        self.name = name
         self.chain = []
         self.current_transactions = []
         self.nodes = set()
         self.difficulty = 4
-        self.filename = f'blockchain_{port}.json'
+        self.filename = f'blockchain_{name}_{port}.json'
 
         # Load chain from file or create genesis block
         if not self.load_chain():
@@ -24,7 +25,7 @@ class Blockchain:
             self.new_block(previous_hash='1', proof=100)
 
     def update_port(self, port):
-        self.filename = f'blockchain_{port}.json'
+        self.filename = f'blockchain_{self.name}_{port}.json'
         self.chain = []
         if not self.load_chain():
             self.new_block(previous_hash='1', proof=100)
@@ -90,12 +91,9 @@ class Blockchain:
             # Check that all transactions in the block are valid
             for transaction in block['transactions']:
                 if transaction['sender'] != '0':
-                    transaction_data = {
-                        'sender': transaction['sender'],
-                        'recipient': transaction['recipient'],
-                        'amount': transaction['amount'],
-                    }
-                    if not self.verify_transaction(transaction['sender'], transaction['signature'], transaction_data):
+                    transaction_data = transaction.copy()
+                    signature = transaction_data.pop('signature', None)
+                    if not signature or not self.verify_transaction(transaction['sender'], signature, transaction_data):
                         return False
 
             last_block = block
@@ -140,13 +138,14 @@ class Blockchain:
 
         return False
 
-    def new_transaction(self, sender, recipient, amount, signature=None):
+    def new_transaction(self, sender, recipient, amount, signature=None, **kwargs):
         """
         Creates a new transaction to go into the next mined Block
         :param sender: <str> Address of the Sender (Public Key)
         :param recipient: <str> Address of the Recipient
         :param amount: <int> Amount
         :param signature: <str> Digital Signature
+        :param kwargs: Additional fields for supply chain or other purposes
         :return: <int> The index of the Block that will hold this transaction
         """
         transaction = {
@@ -154,6 +153,7 @@ class Blockchain:
             'recipient': recipient,
             'amount': amount,
         }
+        transaction.update(kwargs)
 
         if sender != "0":
             if not signature:
@@ -165,12 +165,8 @@ class Blockchain:
             if self.get_balance(sender) < amount:
                 raise ValueError("Insufficient balance")
 
-        self.current_transactions.append({
-            'sender': sender,
-            'recipient': recipient,
-            'amount': amount,
-            'signature': signature
-        })
+        transaction['signature'] = signature
+        self.current_transactions.append(transaction)
 
         self.save_chain()
         return self.last_block['index'] + 1
@@ -296,9 +292,21 @@ app.register_blueprint(mql5_blueprint)
 # Generate a globally unique address for this node
 node_identifier = str(uuid4()).replace('-', '')
 
-# Instantiate the Blockchain
+# Instantiate the Blockchains
 import os
-blockchain = Blockchain(port=os.environ.get('PORT', 5000))
+port = int(os.environ.get('PORT', 5000))
+blockchains = {
+    'main': Blockchain(port=port, name='main'),
+    'supply_chain': Blockchain(port=port, name='supply_chain'),
+    'altcoin': Blockchain(port=port, name='altcoin'),
+    'stablecoin': Blockchain(port=port, name='stablecoin'),
+    'news_coin': Blockchain(port=port, name='news_coin'),
+}
+
+
+def get_blockchain():
+    name = request.args.get('blockchain', 'main')
+    return blockchains.get(name, blockchains['main'])
 
 
 @app.route('/')
@@ -308,6 +316,7 @@ def index():
 
 @app.route('/mine', methods=['GET'])
 def mine():
+    blockchain = get_blockchain()
     # We run the proof of work algorithm to get the next proof...
     last_block = blockchain.last_block
     last_proof = last_block['proof']
@@ -326,6 +335,7 @@ def mine():
     block = blockchain.new_block(proof, previous_hash)
 
     response = {
+        'blockchain': blockchain.name,
         'message': "New Block Forged",
         'index': block['index'],
         'transactions': block['transactions'],
@@ -337,6 +347,7 @@ def mine():
 
 @app.route('/transactions/new', methods=['POST'])
 def new_transaction_endpoint():
+    blockchain = get_blockchain()
     values = request.get_json()
 
     # Check that the required fields are in the POST'ed data
@@ -344,24 +355,33 @@ def new_transaction_endpoint():
     if not all(k in values for k in required):
         return 'Missing values', 400
 
+    # Extract additional fields for supply chain or other purposes
+    extra_data = {k: v for k, v in values.items() if k not in required and k != 'signature'}
+
     # Create a new Transaction
     try:
         index = blockchain.new_transaction(
             values['sender'],
             values['recipient'],
             values['amount'],
-            values.get('signature')
+            values.get('signature'),
+            **extra_data
         )
     except ValueError as e:
         return str(e), 400
 
-    response = {'message': f'Transaction will be added to Block {index}'}
+    response = {
+        'blockchain': blockchain.name,
+        'message': f'Transaction will be added to Block {index}'
+    }
     return jsonify(response), 201
 
 
 @app.route('/chain', methods=['GET'])
 def full_chain():
+    blockchain = get_blockchain()
     response = {
+        'blockchain': blockchain.name,
         'chain': blockchain.chain,
         'length': len(blockchain.chain),
     }
@@ -370,12 +390,119 @@ def full_chain():
 
 @app.route('/balance/<address>', methods=['GET'])
 def get_balance_endpoint(address):
+    blockchain = get_blockchain()
     balance = blockchain.get_balance(address)
     response = {
+        'blockchain': blockchain.name,
         'address': address,
         'balance': balance,
     }
     return jsonify(response), 200
+
+
+@app.route('/balance_all/<address>', methods=['GET'])
+def get_balance_all(address):
+    balances = {}
+    for name, bc in blockchains.items():
+        balances[name] = bc.get_balance(address)
+
+    return jsonify({
+        'address': address,
+        'balances': balances
+    }), 200
+
+
+@app.route('/supply_chain/add_item', methods=['POST'])
+def add_supply_chain_item():
+    blockchain = blockchains.get('supply_chain')
+    values = request.get_json()
+
+    required = ['sender', 'recipient', 'item_id', 'status', 'location']
+    if not all(k in values for k in required):
+        return 'Missing values', 400
+
+    # Amount can be 0 for supply chain tracking
+    amount = values.get('amount', 0)
+
+    extra_data = {
+        'item_id': values['item_id'],
+        'status': values['status'],
+        'location': values['location']
+    }
+    # Add any other extra data provided
+    for k, v in values.items():
+        if k not in required and k not in ['amount', 'signature']:
+            extra_data[k] = v
+
+    try:
+        index = blockchain.new_transaction(
+            values['sender'],
+            values['recipient'],
+            amount,
+            values.get('signature'),
+            **extra_data
+        )
+    except ValueError as e:
+        return str(e), 400
+
+    response = {
+        'blockchain': blockchain.name,
+        'message': f'Item tracking data will be added to Block {index}'
+    }
+    return jsonify(response), 201
+
+
+@app.route('/supply_chain/item/<item_id>', methods=['GET'])
+def get_item_history(item_id):
+    blockchain = blockchains.get('supply_chain')
+    history = []
+    for block in blockchain.chain:
+        for tx in block['transactions']:
+            if tx.get('item_id') == item_id:
+                history.append(tx)
+
+    # Also check current pool
+    for tx in blockchain.current_transactions:
+        if tx.get('item_id') == item_id:
+            history.append(tx)
+
+    return jsonify({
+        'blockchain': blockchain.name,
+        'item_id': item_id,
+        'history': history
+    }), 200
+
+
+@app.route('/blockchains', methods=['GET'])
+def list_blockchains():
+    response = {
+        'blockchains': list(blockchains.keys())
+    }
+    return jsonify(response), 200
+
+
+@app.route('/blockchains/new', methods=['POST'])
+def create_blockchain():
+    values = request.get_json()
+    name = values.get('name')
+    if not name:
+        return "Missing name", 400
+
+    # Sanitize name to avoid path traversal
+    import re
+    if not re.match(r'^[a-zA-Z0-9_-]+$', name):
+        return "Invalid characters in blockchain name. Use only alphanumeric, underscore, and hyphen.", 400
+
+    if name in blockchains:
+        return "Blockchain already exists", 400
+
+    blockchains[name] = Blockchain(port=port, name=name)
+
+    response = {
+        'message': f"New blockchain '{name}' created",
+        'blockchains': list(blockchains.keys())
+    }
+    return jsonify(response), 201
 
 
 @app.route('/wallet/new', methods=['GET'])
@@ -395,6 +522,7 @@ def new_wallet():
 
 @app.route('/difficulty', methods=['GET', 'POST'])
 def difficulty():
+    blockchain = get_blockchain()
     if request.method == 'POST':
         values = request.get_json()
         if not values or 'difficulty' not in values:
@@ -405,15 +533,22 @@ def difficulty():
             if new_difficulty < 1:
                 return 'Difficulty must be at least 1', 400
             blockchain.difficulty = new_difficulty
-            return jsonify({'message': f'Difficulty set to {new_difficulty}'}), 200
+            return jsonify({
+                'blockchain': blockchain.name,
+                'message': f'Difficulty set to {new_difficulty}'
+            }), 200
         except (ValueError, TypeError):
             return 'Invalid difficulty value. Must be an integer.', 400
 
-    return jsonify({'difficulty': blockchain.difficulty}), 200
+    return jsonify({
+        'blockchain': blockchain.name,
+        'difficulty': blockchain.difficulty
+    }), 200
 
 
 @app.route('/nodes/register', methods=['POST'])
 def register_nodes():
+    blockchain = get_blockchain()
     values = request.get_json()
 
     nodes = values.get('nodes')
@@ -424,6 +559,7 @@ def register_nodes():
         blockchain.register_node(node)
 
     response = {
+        'blockchain': blockchain.name,
         'message': 'New nodes have been added',
         'total_nodes': list(blockchain.nodes),
     }
@@ -432,15 +568,18 @@ def register_nodes():
 
 @app.route('/nodes/resolve', methods=['GET'])
 def consensus():
+    blockchain = get_blockchain()
     replaced = blockchain.resolve_conflicts()
 
     if replaced:
         response = {
+            'blockchain': blockchain.name,
             'message': 'Our chain was replaced',
             'new_chain': blockchain.chain
         }
     else:
         response = {
+            'blockchain': blockchain.name,
             'message': 'Our chain is authoritative',
             'chain': blockchain.chain
         }
@@ -454,6 +593,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     port = args.port
 
-    blockchain.update_port(port)
+    for bc in blockchains.values():
+        bc.update_port(port)
 
     app.run(host='0.0.0.0', port=port)
